@@ -1,21 +1,36 @@
 version: 2.1
 
 jobs:
-  build:
+  tests:
     docker:
-      - image: rust:1.46
+      - image: rustlang/rust:nightly
     steps:
       - checkout
+      - run:
+          name: Install grcov
+          command: curl -L https://github.com/mozilla/grcov/releases/latest/download/grcov-linux-x86_64.tar.bz2 | tar jxf -
+      - run:
+          name: Install deps
+          command: apt update && apt install -y zip && rm -rf /var/lib/apt/lists/*
       - run:
           name: Version information
           command: rustc --version; cargo --version; rustup --version
       - run:
-          name: build
-          command: cargo build
-      - run:
           name: test
-          command: cargo test
-      - run:
-          name: release
-          command: cargo build --release
+          command: |
+            export CARGO_INCREMENTAL=0
+            export RUSTFLAGS="-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort"
+            export RUSTDOCFLAGS="-Cpanic=abort"
 
+            cargo build --verbose
+            cargo test --verbose
+            zip -0 ccov.zip `find . \( -name "aceman*.gc*" \) -print`
+            ./grcov ccov.zip -s . -t lcov --llvm --branch --ignore-not-existing --ignore "/*" -o lcov.info
+            bash <(curl -s https://codecov.io/bash) -f lcov.info
+
+workflows:
+  version: 2.1
+
+  test:
+    jobs:
+      - tests
