@@ -1,0 +1,17 @@
+[package]
+name = "aceman"
+version = "0.1.0"
+authors = ["Mikkel Kroman <mk@maero.dk>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+clap = "2.33"
+reqwest = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tokio = { version = "0.2", features = ["full"] }
