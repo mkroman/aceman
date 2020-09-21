@@ -3,11 +3,15 @@ use std::convert::TryInto;
 use std::fmt;
 
 use chrono::{DateTime, Utc};
+use log::debug;
 use serde::{de, Deserialize, Deserializer};
 use thiserror::Error;
+use url::Url;
+
+const LOG_LIST_URL: &str = "https://www.gstatic.com/ct/log_list/v2/log_list.json";
 
 #[derive(Debug, Error)]
-enum DecodeError {
+pub enum DecodeError {
     #[error("The input was too small to be a merkle tree leaf")]
     InputTooSmall,
 
@@ -17,7 +21,7 @@ enum DecodeError {
 
 #[derive(Debug)]
 #[repr(u8)]
-enum MerkleTreeLeafEntry {
+pub enum MerkleTreeLeafEntry {
     TimestampedEntry {
         timestamp: u64,
         entry: Cert,
@@ -30,30 +34,45 @@ enum MerkleTreeLeafEntry {
 #[derive(Debug)]
 #[repr(u16)]
 // > opaque ASN.1Cert<1..2^24-1>;
-enum Cert {
+pub enum Cert {
     X509(Vec<u8>),
     PreCert(Vec<u8>),
 }
 
 #[derive(Debug)]
 #[repr(u8)]
-enum Version {
+pub enum Version {
     V1 = 0,
 }
 
 #[derive(Debug, Deserialize)]
-struct EntryList {
-    entries: Vec<Entry>,
+pub struct EntryList {
+    pub entries: Vec<Entry>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Entry {
-    leaf_input: MerkleTreeLeaf,
-    extra_data: String,
+pub struct Entry {
+    pub leaf_input: MerkleTreeLeaf,
+    pub extra_data: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TreeHeadSignature {}
+
+#[derive(Debug, Deserialize)]
+pub struct SignedTreeHead {
+    /// The size of the tree, in entries, in decimal
+    pub tree_size: u64,
+    /// The timestamp, in decimal
+    pub timestamp: u64,
+    /// The Merkle Tree Hash of the tree, in base64
+    pub sha256_root_hash: String,
+    /// A TreeHeadSignature for the above data
+    pub tree_head_signature: String,
 }
 
 #[derive(Debug)]
-struct MerkleTreeLeaf {
+pub struct MerkleTreeLeaf {
     version: Version,
     leaf: MerkleTreeLeafEntry,
 }
@@ -75,17 +94,21 @@ impl MerkleTreeLeafEntry {
             }
         }
 
-        if buf.len() < 0xd {
+        if buf.len() < 13 {
             return Err(DecodeError::InputTooSmall);
         }
 
+        // Parse the first 64 bits as a timestamp
         let timestamp =
             u64::from_be_bytes(buf[0x0..0x8].try_into().expect("could not get timestamp"));
+        // Parse the next 16 bits as a type identifier
         let entry_type =
             u16::from_be_bytes(buf[0x8..0xa].try_into().expect("could not get entry type"));
 
+        // Parse the entry based on the entry type
         let entry = match entry_type {
             0 => {
+                // Parse as a X509 ASN.1 cert
                 let len = u32::from_be_bytes([0, buf[0xa], buf[0xb], buf[0xc]]);
 
                 Cert::X509(buf[0xd..0xd + (len as usize)].to_vec())
@@ -155,22 +178,22 @@ impl<'de> Deserialize<'de> for MerkleTreeLeaf {
 }
 
 #[derive(Debug, Deserialize)]
-struct LogList {
-    operators: Vec<Operator>,
+pub struct LogList {
+    pub operators: Vec<Operator>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Operator {
+pub struct Operator {
     /// Name of this log operator
-    name: String,
+    pub name: String,
     /// CT log operator email addresses
-    email: Vec<String>,
+    pub email: Vec<String>,
     /// Details of Certificate Transparency logs run by this operator
-    logs: Vec<Log>,
+    pub logs: Vec<Log>,
 }
 
 #[derive(Debug, Deserialize)]
-struct TemporalInterval {
+pub struct TemporalInterval {
     /// All certificates must expire on this date or later
     start_inclusive: DateTime<Utc>,
     /// All certificates must expire before this date
@@ -179,20 +202,20 @@ struct TemporalInterval {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum LogType {
+pub enum LogType {
     Prod,
     Test,
 }
 
 #[derive(Debug, Deserialize)]
-struct FinalTreeHead {
+pub struct FinalTreeHead {
     tree_size: u64,
     sha256_root_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum State {
+pub enum State {
     Pending {
         /// The time at which the log entered this state
         timestamp: DateTime<Utc>,
@@ -222,25 +245,73 @@ enum State {
 }
 
 #[derive(Debug, Deserialize)]
-struct Log {
+pub struct Log {
     /// Description of the CT log
-    description: String,
+    pub description: String,
     /// The public key of the CT log
-    key: String,
+    pub key: String,
     /// The SHA-256 hash of the CT log's public key, base64-encoded
-    log_id: String,
+    pub log_id: String,
     /// The Maximum Merge Delay, in seconds
-    mmd: u64,
+    pub mmd: u64,
     /// The base URL of the CT log's HTTP API
-    url: String,
+    pub url: String,
     /// The domain name of the CT log's DNS API
-    dns: Option<String>,
+    pub dns: Option<String>,
     /// The log will only accept certificates that expire (have a NotAfter date) between these dates
-    temporal_interval: Option<TemporalInterval>,
+    pub temporal_interval: Option<TemporalInterval>,
     /// The purpose of this log, e.g. test.
-    log_type: Option<LogType>,
+    pub log_type: Option<LogType>,
     /// The state of the log from the log list distributor's perspective
-    state: Option<State>,
+    pub state: Option<State>,
+}
+
+/// Requests the latest log list that is compliant with Chrome's CT policy and is included in
+/// Google Chrome
+pub async fn get_log_list() -> Result<LogList, reqwest::Error> {
+    reqwest::get(LOG_LIST_URL).await?.json::<LogList>().await
+}
+
+/// Returns a list of entries from log
+pub async fn get_entries(
+    log_server: &str,
+    start: u64,
+    end: u64,
+) -> Result<EntryList, reqwest::Error> {
+    assert!(end > start);
+
+    let mut url: Url = log_server.parse().unwrap();
+
+    url.path_segments_mut()
+        .unwrap()
+        .pop_if_empty()
+        .extend(&["ct", "v1", "get-entries"]);
+
+    url.query_pairs_mut()
+        .extend_pairs(&[("start", start.to_string()), ("end", end.to_string())]);
+
+    reqwest::get(url).await?.json::<EntryList>().await
+}
+
+/// Returns the max amount of entries returned in a single request for a given log server
+pub async fn get_max_block_size(log_server: &str) -> Result<u64, reqwest::Error> {
+    let list = get_entries(log_server, 0, 10_000).await?;
+
+    Ok(list.entries.len() as u64)
+}
+
+/// Returns the latest signed tree head from the given log
+pub async fn get_signed_tree_head(log_server: &str) -> Result<SignedTreeHead, reqwest::Error> {
+    let mut url: Url = log_server.parse().unwrap();
+
+    url.path_segments_mut()
+        .unwrap()
+        .pop_if_empty()
+        .extend(&["ct", "v1", "get-sth"]);
+
+    debug!("Requesting signed tree head from {}", url.as_str());
+
+    reqwest::get(url).await?.json::<SignedTreeHead>().await
 }
 
 #[cfg(test)]
