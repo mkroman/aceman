@@ -3,10 +3,8 @@ use std::convert::TryInto;
 use std::fmt;
 
 use chrono::{DateTime, Utc};
-use log::debug;
 use serde::{de, Deserialize, Deserializer};
 use thiserror::Error;
-use url::Url;
 
 const LOG_LIST_URL: &str = "https://www.gstatic.com/ct/log_list/v2/log_list.json";
 
@@ -110,8 +108,9 @@ impl MerkleTreeLeafEntry {
             0 => {
                 // Parse as a X509 ASN.1 cert
                 let len = u32::from_be_bytes([0, buf[0xa], buf[0xb], buf[0xc]]);
+                let data = &buf[0xd..0xd + (len as usize)];
 
-                Cert::X509(buf[0xd..0xd + (len as usize)].to_vec())
+                Cert::X509(data.to_vec())
             }
             1 => Cert::PreCert(buf[0xa..buf.len() - 2].to_vec()),
             _ => unreachable!(),
@@ -270,48 +269,6 @@ pub struct Log {
 /// Google Chrome
 pub async fn get_log_list() -> Result<LogList, reqwest::Error> {
     reqwest::get(LOG_LIST_URL).await?.json::<LogList>().await
-}
-
-/// Returns a list of entries from log
-pub async fn get_entries(
-    log_server: &str,
-    start: u64,
-    end: u64,
-) -> Result<EntryList, reqwest::Error> {
-    assert!(end > start);
-
-    let mut url: Url = log_server.parse().unwrap();
-
-    url.path_segments_mut()
-        .unwrap()
-        .pop_if_empty()
-        .extend(&["ct", "v1", "get-entries"]);
-
-    url.query_pairs_mut()
-        .extend_pairs(&[("start", start.to_string()), ("end", end.to_string())]);
-
-    reqwest::get(url).await?.json::<EntryList>().await
-}
-
-/// Returns the max amount of entries returned in a single request for a given log server
-pub async fn get_max_block_size(log_server: &str) -> Result<u64, reqwest::Error> {
-    let list = get_entries(log_server, 0, 10_000).await?;
-
-    Ok(list.entries.len() as u64)
-}
-
-/// Returns the latest signed tree head from the given log
-pub async fn get_signed_tree_head(log_server: &str) -> Result<SignedTreeHead, reqwest::Error> {
-    let mut url: Url = log_server.parse().unwrap();
-
-    url.path_segments_mut()
-        .unwrap()
-        .pop_if_empty()
-        .extend(&["ct", "v1", "get-sth"]);
-
-    debug!("Requesting signed tree head from {}", url.as_str());
-
-    reqwest::get(url).await?.json::<SignedTreeHead>().await
 }
 
 #[cfg(test)]

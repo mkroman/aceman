@@ -1,6 +1,9 @@
 use clap::{crate_authors, crate_name, crate_version, App, Arg};
 
+mod client;
 mod ct;
+
+use client::Client;
 
 async fn print_known_certificate_logs() -> Option<()> {
     let log_list = ct::get_log_list().await.ok()?;
@@ -15,10 +18,10 @@ async fn print_known_certificate_logs() -> Option<()> {
 
     for operator in log_list.operators {
         for log_server in operator.logs {
-            if let Ok(sth) = ct::get_signed_tree_head(log_server.url.as_ref()).await {
-                let max_block_size = ct::get_max_block_size(log_server.url.as_ref())
-                    .await
-                    .unwrap_or(0);
+            let client = Client::new(log_server.url.as_ref());
+
+            if let Ok(sth) = client.get_signed_tree_head().await {
+                let max_block_size = client.get_max_block_size().await.unwrap_or(0);
 
                 println!("{}", log_server.description);
                 println!("    \\- URL:            {}", log_server.url);
@@ -50,6 +53,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     if matches.is_present("list") {
         print_known_certificate_logs().await;
+        return Ok(());
     }
 
     Ok(())
