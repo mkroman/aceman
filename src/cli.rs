@@ -11,9 +11,12 @@ pub struct ListOpts {
 
 #[derive(StructOpt, Debug)]
 pub enum Command {
-    /// Run the webalert daemon
+    /// List the known operator logs
     #[structopt(name = "list")]
     List(ListOpts),
+
+    /// Synchronizes the certificate logs to the local database
+    Sync(ListOpts),
 
     /// Perform database operations
     #[structopt(name = "database", alias = "db")]

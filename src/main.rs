@@ -1,10 +1,30 @@
 use anyhow::Context;
 use log::error;
+use sqlx::prelude::*;
 use structopt::StructOpt;
 use tokio::runtime::Runtime;
 
 use aceman::migration::MigrationRunner;
 use aceman::{cli, ct, database, Client};
+
+async fn sync_certificate_logs(
+    _opts: cli::ListOpts,
+    pool: &mut database::DbPool,
+) -> Result<(), anyhow::Error> {
+    let log_list = ct::get_log_list()
+        .await
+        .with_context(|| "failed to fetch known log list")?;
+
+    database::sync_operator_list(&*pool, &log_list.operators).await?;
+
+    for operator in log_list.operators {
+        for log_server in operator.logs {
+            let client = Client::new(log_server.url.as_ref());
+        }
+    }
+
+    Ok(())
+}
 
 async fn list_known_certificate_logs(_opts: cli::ListOpts) -> Result<(), anyhow::Error> {
     let log_list = ct::get_log_list()
@@ -48,7 +68,7 @@ fn main() -> Result<(), anyhow::Error> {
     let opts = cli::Opts::from_args();
 
     match &opts.command {
-        cli::Command::List(_) | cli::Command::DbCommand(_) => {
+        cli::Command::List(_) | cli::Command::Sync(_) | cli::Command::DbCommand(_) => {
             if let Err(err) = rt.block_on(async_main(opts)) {
                 error!("runtime error: {}", err);
             }
@@ -62,6 +82,10 @@ async fn async_main(opts: cli::Opts) -> Result<(), Box<dyn std::error::Error>> {
     // Connect to the PostgreSQL database
     match opts.command {
         cli::Command::List(list_opts) => list_known_certificate_logs(list_opts).await?,
+        cli::Command::Sync(list_opts) => {
+            let mut pool = database::init(&opts.postgres_url).await?;
+            sync_certificate_logs(list_opts, &mut pool).await?;
+        }
         cli::Command::DbCommand(cmd) => match &cmd {
             cli::DbSubCommand::Migrate(dir) => {
                 let mut pool = database::init(&opts.postgres_url).await?;
